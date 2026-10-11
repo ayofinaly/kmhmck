@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Music Player</title>
+<style>
+:root {
+  --bg: #ffffff; --panel: #f3f3f3; --text: #1a1a1a; --muted: #666666;
+  --line: #d4d4d4; --accent: #1a1a1a; --accent-text: #ffffff; --active: #e4e4e4;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #161616; --panel: #222222; --text: #eeeeee; --muted: #9a9a9a;
+    --line: #3a3a3a; --accent: #eeeeee; --accent-text: #161616; --active: #333333;
+  }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  background: var(--bg); color: var(--text);
+  font-family: Arial, Helvetica, sans-serif; font-size: 16px; line-height: 1.4;
+  padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
+}
+.app { max-width: 720px; margin: 0 auto; height: 100%; display: flex; flex-direction: column; }
+.player { padding: 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
+.now { min-height: 2.8em; margin-bottom: 12px; }
+.now-title { font-weight: bold; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.now-sub { color: var(--muted); font-size: 14px; }
+.seek-row { display: flex; align-items: center; gap: 10px; }
+.time { color: var(--muted); font-size: 14px; min-width: 42px; font-variant-numeric: tabular-nums; }
+.time.right { text-align: right; }
+input[type="range"] { flex: 1; width: 100%; height: 32px; margin: 0; accent-color: var(--accent); cursor: pointer; }
+.controls { display: flex; align-items: center; justify-content: center; gap: 8px; margin: 10px 0; flex-wrap: wrap; }
+button {
+  font: inherit; color: var(--text); background: var(--bg);
+  border: 1px solid var(--line); border-radius: 6px;
+  min-height: 44px; min-width: 44px; padding: 0 14px; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+  -webkit-appearance: none; appearance: none;
+}
+button:hover { background: var(--active); }
+button:focus-visible, input:focus-visible, .track:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); min-width: 88px; font-weight: bold; }
+button.on { background: var(--active); border-color: var(--text); font-weight: bold; }
+.vol-row { display: flex; align-items: center; gap: 10px; justify-content: center; color: var(--muted); font-size: 14px; }
+.vol-row input { max-width: 200px; }
+.bar { display: flex; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--line); align-items: center; }
+.bar .count { margin-left: auto; color: var(--muted); font-size: 14px; }
+.list { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; margin: 0; padding: 0; list-style: none; }
+.track { display: flex; align-items: center; gap: 8px; padding: 0 16px; min-height: 52px; border-bottom: 1px solid var(--line); cursor: pointer; }
+.track:hover { background: var(--panel); }
+.track.current { background: var(--active); font-weight: bold; }
+.track .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 8px 0; }
+.track .ext { color: var(--muted); font-size: 12px; font-weight: normal; }
+.empty { padding: 32px 16px; text-align: center; color: var(--muted); }
+.msg { padding: 8px 16px; font-size: 14px; color: var(--muted); min-height: 1.4em; }
+@media (max-width: 480px) { .controls button { flex: 1 1 auto; } }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="player">
+    <div class="now">
+      <div class="now-title" id="title">Loading...</div>
+      <div class="now-sub" id="sub">Reading the Music folder</div>
+    </div>
+    <div class="seek-row">
+      <span class="time" id="cur">0:00</span>
+      <input type="range" id="seek" min="0" max="0" step="0.1" value="0" aria-label="Seek" disabled>
+      <span class="time right" id="dur">0:00</span>
+    </div>
+    <div class="controls">
+      <button id="shuffle" title="Shuffle" aria-pressed="false">Shuffle</button>
+      <button id="prev" title="Previous" aria-label="Previous">&#9198;&#xFE0E;</button>
+      <button id="play" class="primary" title="Play / Pause">Play</button>
+      <button id="next" title="Next" aria-label="Next">&#9197;&#xFE0E;</button>
+      <button id="repeat" title="Repeat" aria-pressed="true" class="on">Repeat: All</button>
+    </div>
+    <div class="vol-row">
+      <span>Volume</span>
+      <input type="range" id="vol" min="0" max="1" step="0.01" value="1" aria-label="Volume">
+    </div>
+  </div>
+
+  <div class="bar">
+    <button id="reload">Reload folder</button>
+    <span class="count" id="count">0 tracks</span>
+  </div>
+  <div class="msg" id="msg" role="status"></div>
+
+  <ul class="list" id="list"></ul>
+</div>
+<audio id="audio" preload="metadata"></audio>
+
+<script>
+(function () {
+  var MUSIC_DIR = 'Music/';
+  // Optional. Only needed for a custom domain or if auto-detection is wrong.
+  var GITHUB_OWNER = '';   // e.g. 'yourname'
+  var GITHUB_REPO = '';    // e.g. 'my-music'
+  var GITHUB_BRANCH = '';  // leave empty to use the repo's default branch
+  var audio = document.getElementById('audio');
+  var $ = function (id) { return document.getElementById(id); };
+  var els = {
+    title: $('title'), sub: $('sub'), cur: $('cur'), dur: $('dur'), seek: $('seek'),
+    play: $('play'), prev: $('prev'), next: $('next'), shuffle: $('shuffle'), repeat: $('repeat'),
+    vol: $('vol'), reload: $('reload'), count: $('count'), list: $('list'), msg: $('msg')
+  };
+
+  var tracks = [];      // {name, ext, url, path}
+  var index = -1;
+  var shuffleOn = false;
+  var repeatMode = 1;   // 0 off, 1 all, 2 one
+  var seeking = false;
+  var AUDIO_EXT = /\.(flac|mp3|wav|ogg|oga|opus|m4a|aac|wma|aiff|aif)$/i;
+
+  function fmt(s) {
+    if (!isFinite(s) || s < 0) s = 0;
+    var m = Math.floor(s / 60), sec = Math.floor(s % 60);
+    return m + ':' + (sec < 10 ? '0' : '') + sec;
+  }
+  function say(t) { els.msg.textContent = t || ''; }
+
+  /* ---------- Read the Music folder ---------- */
+  function safeDecode(s) { try { return decodeURIComponent(s); } catch (e) { return s; } }
+
+  // Reads a server directory listing (Apache, nginx autoindex, python http.server, etc.)
+  function listDir(dirUrl, depth) {
+    return fetch(dirUrl, { cache: 'no-store' }).then(function (r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.text();
+    }).then(function (html) {
+      var doc = new DOMParser().parseFromString(html, 'text/html');
+      var base = new URL(dirUrl, location.href);
+      var found = [], subdirs = [];
+      Array.prototype.forEach.call(doc.querySelectorAll('a[href]'), function (a) {
+        var href = a.getAttribute('href');
+        if (!href || href.charAt(0) === '?' || href.charAt(0) === '#') return;
+        var u;
+        try { u = new URL(href, base); } catch (e) { return; }
+        if (u.origin !== base.origin || u.pathname.indexOf(base.pathname) !== 0 || u.pathname === base.pathname) return;
+        if (/\/$/.test(u.pathname)) { subdirs.push(u.href); return; }
+        if (AUDIO_EXT.test(u.pathname)) found.push(u.href);
+      });
+      if (depth <= 0 || !subdirs.length) return found;
+      return Promise.all(subdirs.map(function (d) {
+        return listDir(d, depth - 1).catch(function () { return []; });
+      })).then(function (lists) { return found.concat.apply(found, lists); });
+    });
+  }
+
+  // GitHub Pages: no directory listing exists, so ask the GitHub API which files are in Music/
+  function detectGithub() {
+    var h = location.hostname.toLowerCase();
+    var isPages = /\.github\.io$/.test(h);
+    if (!isPages && !(GITHUB_OWNER && GITHUB_REPO)) return null;
+    var segs = location.pathname.split('/').filter(Boolean);
+    if (segs.length && /\.[a-z0-9]+$/i.test(segs[segs.length - 1])) segs.pop();
+    var owner = GITHUB_OWNER || h.split('.')[0];
+    var repo = GITHUB_REPO, dirs = segs;
+    if (!repo) {
+      if (segs.length) { repo = segs[0]; dirs = segs.slice(1); }
+      else { repo = owner + '.github.io'; dirs = []; }
+    }
+    return { owner: owner, repo: repo, root: dirs.concat(MUSIC_DIR.replace(/\/$/, '')).join('/') };
+  }
+  function listGithub(gh, path, depth) {
+    var url = 'https://api.github.com/repos/' + encodeURIComponent(gh.owner) + '/' + encodeURIComponent(gh.repo) +
+      '/contents/' + path.split('/').map(encodeURIComponent).join('/') +
+      (GITHUB_BRANCH ? '?ref=' + encodeURIComponent(GITHUB_BRANCH) : '');
+    return fetch(url, { headers: { Accept: 'application/vnd.github+json' } }).then(function (r) {
+      if (!r.ok) throw new Error('GitHub ' + r.status);
+      return r.json();
+    }).then(function (items) {
+      var files = [], dirs = [];
+      items.forEach(function (it) {
+        if (it.type === 'file' && AUDIO_EXT.test(it.name)) files.push(it.path);
+        else if (it.type === 'dir' && depth > 0) dirs.push(it.path);
+      });
+      if (!dirs.length) return files;
+      return Promise.all(dirs.map(function (d) {
+        return listGithub(gh, d, depth - 1).catch(function () { return []; });
+      })).then(function (lists) { return files.concat.apply(files, lists); });
+    });
+  }
+
+  // Fallback for hosts with no directory listing: Music/playlist.json = ["a.flac", "b.mp3"]
+  function readPlaylistJson() {
+    return fetch(MUSIC_DIR + 'playlist.json', { cache: 'no-store' }).then(function (r) {
+      if (!r.ok) throw new Error('none');
+      return r.json();
+    }).then(function (arr) {
+      return arr.filter(function (n) { return AUDIO_EXT.test(n); }).map(function (n) {
+        return new URL(MUSIC_DIR + n.split('/').map(encodeURIComponent).join('/'), location.href).href;
+      });
+    });
+  }
+
+  function loadFolder() {
+    say('');
+    els.title.textContent = 'Loading...';
+    els.sub.textContent = 'Reading the Music folder';
+    var baseUrl = new URL(MUSIC_DIR, location.href).href;
+
+    var getUrls;
+    var gh = detectGithub();
+    if (location.protocol === 'file:') {
+      getUrls = Promise.reject(new Error('file'));
+    } else if (gh) {
+      getUrls = listGithub(gh, gh.root, 3).then(function (paths) {
+        var urls = paths.map(function (pth) {
+          var sub = pth.slice(gh.root.length + 1);
+          return baseUrl + sub.split('/').map(encodeURIComponent).join('/');
+        });
+        return urls.length ? urls : readPlaylistJson();
+      }).catch(function () { return readPlaylistJson(); });
+    } else {
+      getUrls = listDir(MUSIC_DIR, 3).then(function (u) {
+        if (u.length) return u;
+        return readPlaylistJson();
+      }).catch(function () { return readPlaylistJson(); });
+    }
+
+    return getUrls.then(function (urls) {
+      var list = urls.map(function (u) {
+        var rel = safeDecode(u.slice(baseUrl.length));
+        var file = rel.split('/').pop();
+        var dot = file.lastIndexOf('.');
+        return { name: dot > 0 ? file.slice(0, dot) : file, ext: dot > 0 ? file.slice(dot + 1).toUpperCase() : '', url: u, path: rel };
+      });
+      list.sort(function (a, b) { return a.path.localeCompare(b.path, undefined, { numeric: true, sensitivity: 'base' }); });
+      setTracks(list);
+      if (!list.length) showEmpty('The Music folder has no audio files.');
+    }).catch(function (e) {
+      setTracks([]);
+      if (location.protocol === 'file:') {
+        showEmpty('This page cannot read the Music folder when opened as a file. Serve this folder with a web server and open the page from it (see instructions).');
+      } else {
+        showEmpty('Could not read the "Music" folder next to this page. Check that it exists. On GitHub Pages this can also mean the GitHub API limit was reached; wait a while and tap Reload folder.');
+      }
+    });
+  }
+
+  function setTracks(list) {
+    audio.pause();
+    tracks = list;
+    index = -1;
+    audio.removeAttribute('src');
+    audio.load();
+    els.seek.value = 0; els.seek.max = 0; els.seek.disabled = true;
+    els.cur.textContent = '0:00'; els.dur.textContent = '0:00';
+    updatePlayBtn();
+    render();
+    if (tracks.length) load(0, false);
+    else { els.title.textContent = 'No tracks'; els.sub.textContent = ''; }
+  }
+
+  function showEmpty(text) {
+    els.list.innerHTML = '';
+    var li = document.createElement('li');
+    li.className = 'empty';
+    li.textContent = text;
+    els.list.appendChild(li);
+  }
+
+  function render() {
+    els.list.innerHTML = '';
+    els.count.textContent = tracks.length + (tracks.length === 1 ? ' track' : ' tracks');
+    tracks.forEach(function (t, i) {
+      var li = document.createElement('li');
+      li.className = 'track' + (i === index ? ' current' : '');
+      li.tabIndex = 0;
+      li.setAttribute('role', 'button');
+      var name = document.createElement('span');
+      name.className = 'name';
+      name.textContent = t.name + ' ';
+      var ext = document.createElement('span');
+      ext.className = 'ext';
+      ext.textContent = t.ext;
+      name.appendChild(ext);
+      li.appendChild(name);
+      li.addEventListener('click', function () { load(i, true); });
+      li.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') { e.preventDefault(); load(i, true); }
+      });
+      els.list.appendChild(li);
+    });
+  }
+
+  /* ---------- Playback ---------- */
+  function load(i, autoplay) {
+    if (i < 0 || i >= tracks.length) return;
+    index = i;
+    var t = tracks[i];
+    audio.src = t.url;
+    els.title.textContent = t.name;
+    els.sub.textContent = t.ext + ' \u2022 ' + (i + 1) + ' of ' + tracks.length;
+    els.seek.disabled = false;
+    say('');
+    var items = els.list.children;
+    for (var k = 0; k < items.length; k++) items[k].classList.toggle('current', k === i);
+    if (items[i] && items[i].scrollIntoView) items[i].scrollIntoView({ block: 'nearest' });
+    setMediaSession(t);
+    if (autoplay) play();
+  }
+
+  function play() {
+    if (index < 0) { if (tracks.length) load(0, true); return; }
+    var p = audio.play();
+    if (p && p.catch) p.catch(function () { updatePlayBtn(); });
+  }
+  function pause() { audio.pause(); }
+  function toggle() { if (audio.paused) play(); else pause(); }
+
+  function pickNext(auto) {
+    if (!tracks.length) return -1;
+    if (shuffleOn && tracks.length > 1) {
+      var r;
+      do { r = Math.floor(Math.random() * tracks.length); } while (r === index);
+      return r;
+    }
+    if (index + 1 < tracks.length) return index + 1;
+    if (repeatMode === 1 || !auto) return 0;
+    return -1;
+  }
+  function next() { var n = pickNext(false); if (n >= 0) load(n, true); }
+  function prev() {
+    if (audio.currentTime > 3 || tracks.length < 2) { audio.currentTime = 0; return; }
+    var p = index - 1;
+    if (p < 0) p = tracks.length - 1;
+    load(p, true);
+  }
+  function updatePlayBtn() { els.play.textContent = audio.paused ? 'Play' : 'Pause'; }
+
+  audio.addEventListener('play', updatePlayBtn);
+  audio.addEventListener('pause', updatePlayBtn);
+  audio.addEventListener('loadedmetadata', function () {
+    els.seek.max = audio.duration || 0;
+    els.dur.textContent = fmt(audio.duration);
+  });
+  audio.addEventListener('durationchange', function () {
+    els.seek.max = isFinite(audio.duration) ? audio.duration : 0;
+    els.dur.textContent = fmt(audio.duration);
+  });
+  audio.addEventListener('timeupdate', function () {
+    if (!seeking) els.seek.value = audio.currentTime;
+    els.cur.textContent = fmt(audio.currentTime);
+    updatePosition();
+  });
+  audio.addEventListener('ended', function () {
+    if (repeatMode === 2) { audio.currentTime = 0; play(); return; }
+    var n = pickNext(true);
+    if (n >= 0) load(n, true);
+    else { audio.currentTime = 0; updatePlayBtn(); }
+  });
+  audio.addEventListener('error', function () {
+    if (index < 0) return;
+    say('Cannot play "' + tracks[index].name + '" on this device/browser. Skipping.');
+    if (index + 1 < tracks.length) setTimeout(function () { load(index + 1, true); }, 800);
+  });
+
+  /* ---------- Controls ---------- */
+  els.play.addEventListener('click', toggle);
+  els.next.addEventListener('click', next);
+  els.prev.addEventListener('click', prev);
+  els.reload.addEventListener('click', loadFolder);
+
+  els.shuffle.addEventListener('click', function () {
+    shuffleOn = !shuffleOn;
+    els.shuffle.classList.toggle('on', shuffleOn);
+    els.shuffle.setAttribute('aria-pressed', String(shuffleOn));
+    els.shuffle.textContent = shuffleOn ? 'Shuffle: On' : 'Shuffle';
+  });
+  els.repeat.addEventListener('click', function () {
+    repeatMode = (repeatMode + 1) % 3;
+    els.repeat.textContent = ['Repeat: Off', 'Repeat: All', 'Repeat: One'][repeatMode];
+    els.repeat.classList.toggle('on', repeatMode > 0);
+    els.repeat.setAttribute('aria-pressed', String(repeatMode > 0));
+  });
+  els.seek.addEventListener('input', function () {
+    seeking = true;
+    els.cur.textContent = fmt(parseFloat(els.seek.value));
+  });
+  els.seek.addEventListener('change', function () {
+    audio.currentTime = parseFloat(els.seek.value);
+    seeking = false;
+  });
+  els.vol.addEventListener('input', function () { audio.volume = parseFloat(els.vol.value); });
+
+  /* ---------- Keyboard (PC) ---------- */
+  document.addEventListener('keydown', function (e) {
+    var tag = (e.target.tagName || '').toLowerCase();
+    if (tag === 'input') return;
+    if ((tag === 'button' || e.target.classList.contains('track')) && e.key === ' ') return;
+    if (e.key === ' ') { e.preventDefault(); toggle(); }
+    else if (e.key === 'ArrowRight') { audio.currentTime = Math.min(audio.duration || 0, audio.currentTime + 5); }
+    else if (e.key === 'ArrowLeft') { audio.currentTime = Math.max(0, audio.currentTime - 5); }
+    else if (e.key === 'n' || e.key === 'N') next();
+    else if (e.key === 'p' || e.key === 'P') prev();
+  });
+
+  /* ---------- Lock screen / media keys ---------- */
+  function setMediaSession(t) {
+    if (!('mediaSession' in navigator) || typeof MediaMetadata === 'undefined') return;
+    navigator.mediaSession.metadata = new MediaMetadata({ title: t.name, artist: 'My music' });
+  }
+  function updatePosition() {
+    if (!('mediaSession' in navigator) || !navigator.mediaSession.setPositionState) return;
+    if (!isFinite(audio.duration) || audio.duration <= 0) return;
+    try {
+      navigator.mediaSession.setPositionState({
+        duration: audio.duration, position: Math.min(audio.currentTime, audio.duration), playbackRate: audio.playbackRate
+      });
+    } catch (e) {}
+  }
+  if ('mediaSession' in navigator) {
+    var set = function (a, fn) { try { navigator.mediaSession.setActionHandler(a, fn); } catch (e) {} };
+    set('play', play); set('pause', pause); set('previoustrack', prev); set('nexttrack', next);
+    set('seekto', function (d) { if (d && typeof d.seekTime === 'number') audio.currentTime = d.seekTime; });
+  }
+
+  loadFolder();
+})();
+</script>
+</body>
+</html>
